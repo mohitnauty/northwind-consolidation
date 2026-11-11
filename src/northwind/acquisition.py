@@ -35,17 +35,20 @@ POST_ACQUISITION_MONTHS = {"2024-07", "2024-08", "2024-09", "2024-10", "2024-11"
 class AcquisitionAccounting:
     goodwill_inr: Decimal
     nci_at_acquisition_inr: Decimal
-    pre_acq_profit_inr: Decimal  # for cross-check against the acquisition note's 18,000,000
 
 
 def goodwill_and_nci_at_acquisition() -> AcquisitionAccounting:
     nci = NET_ASSETS_AT_COMPLETION_INR * (1 - OWNERSHIP_PCT)
     goodwill = CONSIDERATION_INR - NET_ASSETS_AT_COMPLETION_INR * OWNERSHIP_PCT
-    return AcquisitionAccounting(goodwill_inr=goodwill, nci_at_acquisition_inr=nci, pre_acq_profit_inr=Decimal("0"))
+    return AcquisitionAccounting(goodwill_inr=goodwill, nci_at_acquisition_inr=nci)
 
 
 def split_india_monthly_pl(monthly_rows: list[dict], in_map: dict):
-    """Returns (pre_acq_by_group_code, post_acq_by_group_code, sources_by_group_code).
+    """Returns (pre_acq_by_group_code, post_acq_by_group_code, pre_sources, post_sources, unmapped).
+
+    Sources are tracked separately per period - a group code's post-acquisition
+    posting should only cite the Jul-Dec rows that actually fed it, not the Apr-Jun
+    rows that went into the (separately eliminated) pre-acquisition figure.
 
     Amounts stay in India's own ledger-code grouping until mapped to group codes here,
     so a line with no mapping (there isn't one in the monthly P&L file, but this keeps
@@ -53,7 +56,8 @@ def split_india_monthly_pl(monthly_rows: list[dict], in_map: dict):
     """
     pre: dict[str, Decimal] = {}
     post: dict[str, Decimal] = {}
-    sources: dict[str, list] = {}
+    pre_sources: dict[str, list] = {}
+    post_sources: dict[str, list] = {}
     unmapped = set()
 
     for row in monthly_rows:
@@ -61,15 +65,16 @@ def split_india_monthly_pl(monthly_rows: list[dict], in_map: dict):
         if group_code is None:
             unmapped.add(row["ledger_code"])
             continue
-        bucket = pre if row["month"] in PRE_ACQUISITION_MONTHS else (
-            post if row["month"] in POST_ACQUISITION_MONTHS else None
-        )
-        if bucket is None:
+        if row["month"] in PRE_ACQUISITION_MONTHS:
+            bucket, source_bucket = pre, pre_sources
+        elif row["month"] in POST_ACQUISITION_MONTHS:
+            bucket, source_bucket = post, post_sources
+        else:
             continue  # month outside FY2024 entirely - none exist in this file, kept defensive
         bucket[group_code] = bucket.get(group_code, Decimal("0")) + row["amount"]
-        sources.setdefault(group_code, []).append(row["ref"])
+        source_bucket.setdefault(group_code, []).append(row["ref"])
 
-    return pre, post, sources, unmapped
+    return pre, post, pre_sources, post_sources, unmapped
 
 
 def pre_acquisition_profit(pre_acq_by_group_code: dict) -> Decimal:
